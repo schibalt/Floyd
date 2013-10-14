@@ -72,6 +72,9 @@
     <ClInclude Include="..\..\..\..\..\..\..\Program Files (x86)\Microsoft Visual Studio 11.0\VC\include\sched.h" />
     <ClInclude Include="..\..\..\..\..\..\..\Program Files (x86)\Microsoft Visual Studio 11.0\VC\include\semaphore.h" />
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="readme.txt" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
