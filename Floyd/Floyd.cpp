@@ -1,16 +1,16 @@
-﻿#include <assert.h>
-#include <cmath>
-#include <cstring>
-#include <fcntl.h>
+﻿//#include <assert.h>
+//#include <cmath>
+//#include <cstring>
+//#include <fcntl.h>
 #include <fstream>
 #include <iostream>
-#include <io.h>
+//#include "io.h"
 #include <iomanip>
 #include <pthread.h>
 #include <sstream>
 #include <stdio.h>
 #include <stdint.h>
-#include <stdlib.h>
+//#include <stdlib.h>
 #include <vector>
 #include <Windows.h>
 
@@ -30,550 +30,559 @@ using std::string;
 using std::stringstream;
 using std::istream_iterator;
 using std::cin;
-using std::wstring;
 
-#define NUM_THREADS     5
 HANDLE hConsole;
 
 const int MAX_CHARS_PER_LINE = 512;
 const int MAX_TOKENS_PER_LINE = 20;
+// read an entire line into memory
+char buf[MAX_CHARS_PER_LINE];
 const char* const DELIMITER = " ";
-vector<wstring> cities;
+vector<string> cities;
 int nCities;
 
-//let dist be a |V| × |V| array of minimum distances initialized to ∞ (infinity)
+//let dist be a |V| × |V| array of minimum distances initialized to ∞ (infinity)'
 int** dist ;
 int** next;
 
 int k;
 int rpp;
+bool bidirectional;
+string filename;
+int processors;
+
+// create a file-reading object
+ifstream fin;
 
 void PrintDist (int** dist);
 void PrintDist (int** dist, int k, int i, int j);
 void PrintDistances (int** distances);
 void PrintNext (int** next);
-string Path (int** dist, int** next, int i, int j);
+string Path (int i, int j);
 void *Floyd_Row (void *thread_id);
-void Floyd_Row ();
 int64_t GetTimeMs64();
-vector<string> split (string const & input);
-vector<int> path (int source, int destination);
+vector<string> split (string const & ilooput);
+vector<int> GetPath (int source, int destination);
+void InitializeArrays();
+void CleanUpArrays();
+void PathLoop();
+
+// A shared mutex
+pthread_mutex_t mutex;
 
 int main (int argc, char* argv[])
 {
-    //hConsole = GetStdHandle (STD_OUTPUT_HANDLE);
-    _setmode (_fileno (stdout), _O_U8TEXT);
+	hConsole = GetStdHandle (STD_OUTPUT_HANDLE);
+	//_setmode (_fileno (stdout), _O_U8TEXT);
 
+	filename = argv[1];
+	if (atoi (argv[2]) )
+		bidirectional = 1;
+	else
+		bidirectional = 0;
 
-    int testcase = atoi (argv[1]);
-    bool bidirectional;
-    if (atoi (argv[2]) == 1)
-        bidirectional = 1;
-    else
-        bidirectional = 0;
+	processors = atoi(argv[3]);
 
-    // create a file-reading object
-    ifstream fin;
+	/* initialize random seed: */
+	srand ( (unsigned int) time (NULL));
 
-    switch (testcase)     //decide which case is going to be run
-    {
-    case 1:
-        fin.open (L"simple.dat");   // open a file
-        break;
-    default:
-        fin.open (L"nqmq.dat");   // open a file
-    }//switch
+	int rc = 0;
 
-    if (!fin.good())
-    {
-        wprintf (L"File for graph data couldn't be found or couldn't be open.");
-        return 1; // exit if file not found
-    }
+	InitializeArrays();
+	rpp = nCities / processors; //rows per processor
+	if (rpp < 1) // having more threads than rows isn't necessary
+	{
+		printf ("using more processors than there are cities doesn't make sense\n");
+		exit(0);
+	}
+	/*
+	PrintDistances (distances);
+	PrintDist (dist);
+	PrintNext (next);*/
+	vector<pthread_t> threads (processors);
 
-    // read an entire line into memory
-    char buf[MAX_CHARS_PER_LINE];
-    fin.getline (buf, MAX_CHARS_PER_LINE);
-    istringstream (buf) >> nCities;
-    cities.push_back (wstring (buf, buf + strlen (buf)));
+	printf ("────────────────────────────────────────────\n%i cities / %i threads = %i cities per thread\n────────────────────────────────────────────\n",
+		nCities, processors, rpp);
+	
+	uint64_t runstarttime = GetTimeMs64();
+	for (k = 1; k <= nCities; k++)
+	{
+			//printf ("──────\nk = %i\n──────\n", k);
 
-    for (int city = nCities; city > 0; city--)
-    {
-        fin.getline (buf, MAX_CHARS_PER_LINE);
-        cities.push_back (wstring (buf, buf + strlen (buf)));
-    }
+			// Initialize the mutex
+			/*
+			if(pthread_mutex_init(&mutex, NULL))
+			{
+			printf("Unable to initialize a mutex\n");
+			return -1;
+			}*/
 
-    for (int city = nCities; city > 0; city--)
-    {
-        wstring svcity = cities[city ];
-        for (unsigned i = 0; i < svcity.length(); ++i)
-            wprintf (L"%c", svcity.at (i));
-        wprintf (L"\n");
-    }
+			for (int thread = 0; thread < processors; thread++)
+			{
+				if(pthread_create (&threads[thread], NULL, Floyd_Row, (void *) thread))
+				{
+					printf("Could not create thread %d\n", thread);
+					exit(0);
+				}
+			}
 
-    //inst arrays;
-    //distance is for initial distances
-    int** distances = new int*[nCities + 1];
+			for (int thread = 0; thread < processors; thread++)
+			{
+				if(pthread_join (threads[thread], NULL))
+				{
+					printf("Could not join thread %d\n", thread);
+					exit(0);
+				}
+			}
+	}//k
+	uint64_t runendtime = GetTimeMs64();
+	uint64_t runtime = runendtime - runstarttime;
 
-    //let dist be a |V| × |V| array of minimum distances initialized to ∞ (infinity)
-    dist = new int*[nCities + 1];
-    next = new int*[nCities + 1];
+	printf ("\nrun time for %i processors: %d ms\n", processors, runtime);
+	//PrintDist (dist);
+	//PrintNext (next);
+	PathLoop();
+	CleanUpArrays();
 
-    for (int i = nCities; i > 0; i--)     //for each edge (u,v)
-    {
-        distances[i] = new int[nCities + 1];
-        dist[i] = new int[nCities + 1];//dist[u][v] ← w(u,v)  // the weight of the edge (u,v)
-        next[i] = new int[nCities + 1];
-
-        for (int j = nCities; j > 0; j--)
-        {
-            if (i == j)
-            {
-                distances[i][j] = 0;
-                dist[i][j] = 0;
-            }
-            else
-            {
-                distances[i][j] = INT_MAX;
-                dist[i][j] = INT_MAX;
-            }
-            next[i][j] = -1;
-        }
-    }
-    //arrays initialized
-
-    //parse initial city distances
-    while (!fin.eof())
-    {
-        fin.getline (buf, MAX_CHARS_PER_LINE);
-
-        if (buf[0] == '-') break;
-
-        istringstream iss (buf);
-        int sourceCity = -1, destCity = -1, distance = INT_MAX;
-
-        for (int subdex = 3; subdex > 0; subdex--)     //iterate thice for each substring
-        {
-            //(there's actually an additional substring that's either empty or whitespace)
-            string sub;
-            iss >> sub;
-            wstring wsdestcity;
-            wstring wssourcecity;
-
-            switch (subdex)
-            {
-            case 1:
-                distance = atoi (sub.c_str());
-                wprintf (L"distance: %i\n\n", distance);
-                break;
-            case 2:
-                destCity = atoi (sub.c_str());
-                wprintf (L"destination: ");
-                wsdestcity = cities[destCity];
-                for (unsigned i = 0; i < wsdestcity.length(); ++i)
-                    wprintf (L"%c", wsdestcity.at (i));
-                wprintf (L"\n");
-                break;
-            case 3:
-                sourceCity = atoi (sub.c_str());
-                wprintf (L"source: ");
-                wssourcecity = cities[sourceCity];
-                for (unsigned i = 0; i < wssourcecity.length(); ++i)
-                    wprintf (L"%c", wssourcecity.at (i));
-                wprintf (L"\n");
-                break;
-            default:
-                wprintf (L"this isn't the substring index you're looking for\n");
-            }   //switch
-        }//for
-
-        distances[sourceCity][destCity  ] = distance;
-
-        if (bidirectional)
-            distances[destCity ][sourceCity ] = distance;
-
-        if (distance != INT_MAX)     //inf dist edges already initialized
-        {
-            //only overwrite edge vals is they're explicitly finite
-            //(safety from overwriting zero-val edges from each vertex to itself)
-            dist[sourceCity ][destCity ] = distance;
-
-            if (bidirectional)
-                dist[destCity ][sourceCity ] = distance;
-        }
-    } //while
-    //initial distances initialized
-
-    PrintDistances (distances);
-    PrintDist (dist);
-    PrintNext (next);
-
-    for (int experiments = 1; experiments > 0; experiments--)
-    {
-        int rc = 0;
-
-        //run loop
-        int p[] = {1, 2, 4, 7};
-        for (int np = 0; np < 4; np++) //runs the algorithm for
-            //particular number of processing elements
-        {
-
-            rpp = nCities / p[np]; //rows per processor
-            vector<pthread_t> threads (p[np]);
-            wprintf (L"────────────────────────────────────────────\n%i cities / %i threads = %i cities per thread\n────────────────────────────────────────────\n",
-                     nCities, p[np], rpp);
-            uint64_t runstarttime = GetTimeMs64();
-
-            for (k = 1; k <= nCities; k++)
-            {
-                if (p[np] == 1)
-                    Floyd_Row();
-                else
-                {
-                    //wprintf (L"──────\nk = %i\n──────\n", k);
-                    //system(L"cls");
-
-                    for (int thrid = 0; thrid < p[np]; thrid++)
-                        rc = pthread_create (&threads[thrid], NULL, Floyd_Row, (void *) thrid);
-
-                    for (int thrid = 0; thrid < p[np]; thrid++)
-                        rc = pthread_join (threads[thrid], NULL);
-                }
-            }//k
-            uint64_t runendtime = GetTimeMs64();
-            uint64_t runtime = runendtime - runstarttime;
-
-            wprintf (L"run time for %i processors: %d ns\n", p[np], runtime);
-            //PrintDist (dist);
-        }//np
-        //run loop end
-    }
-
-    PrintNext (next);
-
-    /* initialize random seed: */
-    srand ( (unsigned int) time (NULL));
-    string buffer;
-    /*
-        while (buffer != "n" )
-        {*/
-    int source = rand() % nCities + 1;
-    int destination = rand() % nCities + 1;
-
-    while (source == destination)
-        destination = rand() % nCities + 1;
-
-    vector<int> vecpath = path (source, destination);
-    wprintf (L"\nShortest path from %s to %s is %i.\n", cities[source].c_str(), cities[destination].c_str(), dist[source][destination]);
-
-    for (vector<int>::size_type i = 0; i < vecpath.size() - 1; i++)
-    {
-        int source = vecpath[i];
-        int destination = vecpath[i + 1];
-        wprintf (L"    %s to %s:\t%i\n", cities[source].c_str(), cities[destination].c_str(), dist[source][destination]);
-    }
-    wprintf (L"\nRun again? (y/n)\n", cities[source].c_str(), cities[destination].c_str(), dist[source][destination]);
-    /*
-    	cin >> buffer;
-
-    while(buffer != "y" && buffer != "n")
-    	cin >> buffer;
-    }*/
-
-    for (int x = 1; x <= nCities; x++)
-    {
-        delete [] distances[x];
-        delete [] dist[x];
-        delete [] next[x];
-    }
-    delete [] distances;
-    delete [] dist;
-    delete [] next;
-    exit (EXIT_SUCCESS);
+	exit (EXIT_SUCCESS);
 }
 
-vector<int> path (int source, int destination)
+vector<int> GetPath (int source, int destination)
 {
-    string wspath = Path (dist, next, source, destination);
-    //wprintf (L"\npath: %i%ls%i\n", source, wspath.c_str(), destination);
-    const string spath (wspath.begin(), wspath.end());
-    vector<int> pathvector;
-    char buffer[3];
+	string wspath = Path (source, destination);
+	//printf ("\loopath: %i%ls%i\n", source, wspath.c_str(), destination);
+	const string spath (wspath.begin(), wspath.end());
+	vector<int> pathvector;
+	char buffer[3];
 
-    string scity (buffer);
+	string scity (buffer);
 
-    pathvector.push_back (source);
-    vector<string> intermediatepath = split (spath);
+	pathvector.push_back (source);
+	vector<string> intermediatepath = split (spath);
 
-    for (vector<string>::iterator it = intermediatepath.begin(); it != intermediatepath.end(); ++it)
-    {
-        int city = atoi ( (*it).c_str());
-        pathvector.push_back (city);
-    }
+	for (vector<string>::iterator it = intermediatepath.begin(); it != intermediatepath.end(); ++it)
+	{
+		int city = atoi ( (*it).c_str());
+		pathvector.push_back (city);
+	}
 
-    _itoa_s (destination, buffer, 10);
-    scity = string (buffer);
-    pathvector.push_back (destination);
+	_itoa_s (destination, buffer, 10);
+	scity = string (buffer);
+	pathvector.push_back (destination);
 
-    return pathvector;
+	return pathvector;
 }
 
-vector<string> split (string const & input)
+vector<string> split (string const & ilooput)
 {
-    istringstream buffer (input);
-    vector<string> ret;
+	istringstream buffer (ilooput);
+	vector<string> ret;
 
-    copy (istream_iterator<string> (buffer), istream_iterator<string>(), back_inserter (ret));
-    return ret;
+	copy (istream_iterator<string> (buffer), istream_iterator<string>(), back_inserter (ret));
+	return ret;
 }
 
 void *Floyd_Row (void * thread_id)
 {
-    //wprintf (L"Thread %d says, \"Hello!\"\n", thread_id);
+	// Lock the mutex
+	//pthread_mutex_lock(&mutex);
 
-    for (int i = (int) thread_id * rpp + 1; i < ( (int) thread_id + 1) * rpp + 1; i++)
-    {
-        //wprintf (L"processing row %i in thread %d\n", i, thread_id);
-        for (int j = 1; j <= nCities; j++)
-        {
-            int polldist;
-            int offsetbycolumn = dist[i][k];
-            int offsetbyrow = dist[k][j];
+	//printf ("Thread %d says, \"Hello!\"\n", thread_id);
 
-            //the sum of a negative weight edge and an infinite weight edge only
-            //seems less than an infinite weight edge because of the use of int data type.
-            //in principle the sum is still infinite.
-            if (offsetbyrow == INT_MAX || offsetbycolumn == INT_MAX)
-                polldist = INT_MAX;
-            else
-                polldist = dist[i][k] + dist[k][j];
+	for (int i = (int) thread_id * rpp + 1; i <= ( (int) thread_id + 1) * rpp; i++)
+	{
+		//printf ("processing row %02i in thread %d\n", i, thread_id);
+		for (int j = 1; j <= nCities; j++)
+		{
+			//PrintDist (dist, k, i, j);
+			int polldist;
+			int kthcolumn = dist[i][k];
+			int kthrow = dist[k][j];
 
-            if (polldist < dist[i][j])
-            {
-                dist[i][j] = polldist;
-                next[i][j] = k;
-            }
-        } //j
-    }//i
-    pthread_exit (NULL);
-    return NULL;
+			//the sum of a negative weight edge and an infinite weight edge only
+			//seems less than an infinite weight edge because of the use of int data type.
+			//in principle the sum is still infinite.
+			if (kthrow == INT_MAX || kthcolumn == INT_MAX)
+				polldist = INT_MAX;
+			else
+				polldist = dist[i][k] + dist[k][j];
+
+			if (polldist < dist[i][j])
+			{
+				dist[i][j] = polldist;
+				next[i][j] = k;
+			}
+		} //j
+	}//i
+	// Unlock the mutex
+	//pthread_mutex_unlock(&mutex);
+
+	pthread_exit (NULL);
+	return NULL;
 }
 
-void Floyd_Row ()
+string Path (int i, int j)
 {
-    for (int i = 1; i <= nCities; i++)
-    {
-        for (int j = 1; j <= nCities; j++)
-        {
-            //PrintDist (dist, k, i, j);
-            int polldist ;
-            int offsetbycolumn = dist[i][k];
-            int offsetbyrow = dist[k][j];
+	if (dist[i][j] == INT_MAX)
+		return "no path";//no path
 
-            //the sum of a negative weight edge and an infinite weight edge only
-            //seems less than an infinite weight edge because of the use of int data type.
-            //in principle the sum is still infinite.
-            if (offsetbyrow == INT_MAX || offsetbycolumn == INT_MAX)
-                polldist = INT_MAX;
-            else
-                polldist = dist[i][k] + dist[k][j];
+	string sintermediate = " ";
+	sintermediate = next[i][j];
+	int intermediate = next[i][j];
 
-            if (polldist < dist[i][j])
-            {
-                dist[i][j] = polldist;
-                next[i][j] = k;
-            }
-        } //j
-    }//i
-}
+	if (intermediate == -1)
+		return " ";   // the direct edge from i to j gives the shortest path
+	else
+	{
+		string pathiint = Path (i, intermediate);
+		string pathintj = Path (intermediate, j);
+		stringstream sstm;
+		sstm << pathiint << intermediate << pathintj;
 
-string Path (int** dist, int** next, int i, int j)
-{
-    if (dist[i][j] == INT_MAX)
-        return "no path";//no path
-
-    string sintermediate = " ";
-    sintermediate = next[i][j];
-    int intermediate = next[i][j];
-
-    if (intermediate == -1)
-        return " ";   // the direct edge from i to j gives the shortest path
-    else
-    {
-        string pathiint = Path (dist, next, i, intermediate);
-        string pathintj = Path (dist, next, intermediate, j);
-        stringstream sstm;
-        sstm << pathiint << intermediate << pathintj;
-
-        return sstm.str();
-    }
+		return sstm.str();
+	}
 }
 
 void PrintDist (int** dist)
 {
-    //print dist matrix
-    wprintf (L"\n");
-    wprintf (L"Shortest paths matrix\n\n");
-    wprintf (L"   │");
-    for (int x = 1; x <= nCities; x ++)
-        wprintf (L" %04i ", x);
-    wprintf (L"\n");
-    wprintf (L"───┼");
-    for (int x = nCities; x > 0; x--)
-        wprintf (L"──────");
-    wprintf (L"\n");
-    for (int x = 1; x <= nCities; x ++)
-    {
-        wprintf (L"%02i │", x);
-        for (int y = 1; y <= nCities; y ++)
-        {
-            int distance = dist[x][y];
+	//print dist matrix
+	printf ("\n");
+	printf ("Shortest paths matrix\n\n");
+	printf ("   │");
+	for (int x = 1; x <= nCities; x ++)
+		printf (" %04i ", x);
+	printf ("\n");
+	printf ("───┼");
+	for (int x = nCities; x > 0; x--)
+		printf ("──────");
+	printf ("\n");
+	for (int x = 1; x <= nCities; x ++)
+	{
+		printf ("%02i │", x);
+		for (int y = 1; y <= nCities; y ++)
+		{
+			int distance = dist[x][y];
 
-            if (distance == INT_MAX)
-                wprintf (L"  \x221e   ");
-            else
-                wprintf (L" %04i ", distance);
-        }
-        wprintf (L"\n");
-    }
-    wprintf (L"\n");
+			if (distance == INT_MAX)
+				printf (" inf  ");
+				//printf ("  \x221e   ");
+			else
+				printf (" %04i ", distance);
+		}
+		printf ("\n");
+	}
+	printf ("\n");
 }
 
 void PrintDist (int** dist, int k, int i, int j)
 {
-    //print dist matrix
-    wprintf (L"\n");
-    wprintf (L"Shortest paths matrix (k = %i, i = %i, j = %i)\n\n", k, i, j);
-    wprintf (L"   |");
-    for (int x = 1; x <= nCities; x ++)
-        wprintf (L" %04i ", x);
-    wprintf (L"\n");
-    wprintf (L"───┼");
-    for (int x = 1; x <= nCities; x ++)
-        wprintf (L"──────");
-    wprintf (L"\n");
-    for (int y = 1; y <= nCities; y ++)
-    {
-        //wprintf (L"%02i |", y);
-        wprintf (L"%02i │", y);
-        for (int x = 1; x <= nCities; x ++)
-        {
-            int distance = dist[y][x];
+	//system("cls");
+	printf ("\n");
+	printf ("Shortest paths matrix (k = %i, i = %i, j = %i)\n\n", k, i, j);
+	printf ("   |");
+	for (int x = 1; x <= nCities; x ++)
+		printf (" %04i ", x);
+	printf ("\n");
+	printf ("───┼");
+	for (int x = 1; x <= nCities; x ++)
+		printf ("──────");
+	printf ("\n");
+	for (int y = 1; y <= nCities; y ++)
+	{
+		printf ("%02i │", y);
+		for (int x = 1; x <= nCities; x ++)
+		{
+			int distance = dist[y][x];
 
-            //color logic
-            bool isoffset = y == i && x == k || y == k && x == j;
-            bool isfocal = y == i && x == j;
+			//color logic
+			bool isoffset = y == i && x == k || y == k && x == j;
+			bool isfocal = y == i && x == j;
 
-            if (isoffset && !isfocal)
-                SetConsoleTextAttribute (hConsole, 14);
+			if (isoffset && !isfocal)
+				SetConsoleTextAttribute (hConsole, 14);
 
-            if (!isoffset && isfocal)
-                SetConsoleTextAttribute (hConsole, 12);
+			if (!isoffset && isfocal)
+				SetConsoleTextAttribute (hConsole, 12);
 
-            if (isoffset && isfocal)
-                SetConsoleTextAttribute (hConsole, 4);
+			if (isoffset && isfocal)
+				SetConsoleTextAttribute (hConsole, 4);
+			//end color logic
 
-            if (distance == INT_MAX)
-                //wprintf (L" inf  ");
-                wprintf (L"  \x221e   ");
-            else
-                wprintf (L" %04i ", distance);
-            SetConsoleTextAttribute (hConsole, 15);
-        }
-        wprintf (L"\n");
-    }
-    wprintf (L"\n");
+			if (distance == INT_MAX)
+				printf (" inf  ");
+				//printf ("  \x221e   ");
+			else
+				printf (" %04i ", distance);
+			SetConsoleTextAttribute (hConsole, 15);
+		}
+		printf ("\n");
+	}
+	printf ("\n");
 }
 
 void PrintDistances (int** distances)
 {
-    //print distances matrix
-    wprintf (L"\nInitial distances matrix\n\n");
-    wprintf (L"   |");
-    //wprintf (L"   │");
-    for (int x = 1; x <= nCities; x ++)
-        wprintf (L" %03i ", x);
-    wprintf (L"\n");
-    wprintf (L"───┼");
-    for (int x = 1; x <= nCities; x ++)
-        wprintf (L"─────");
-    wprintf (L"\n");
-    for (int x = 1; x <= nCities; x ++)
-    {
-        wprintf (L"%02i │", x);
-        for (int y = 1; y <= nCities; y ++)
-        {
-            int distance = distances[x][y];
+	//print distances matrix
+	printf ("\nInitial distances matrix\n\n");
+	printf ("   |");
+	//printf ("   │");
+	for (int x = 1; x <= nCities; x ++)
+		printf (" %03i ", x);
+	printf ("\n");
+	printf ("───┼");
+	for (int x = 1; x <= nCities; x ++)
+		printf ("─────");
+	printf ("\n");
+	for (int x = 1; x <= nCities; x ++)
+	{
+		printf ("%02i │", x);
+		for (int y = 1; y <= nCities; y ++)
+		{
+			int distance = distances[x][y];
 
-            if (distance == INT_MAX)
-                wprintf (L" inf ");
-            //wprintf (L"  \x221e  ");
-            else
-                wprintf (L" %03i ", distance);
-        }
-        wprintf (L"\n");
-    }
-    wprintf (L"\n");
+			if (distance == INT_MAX)
+				//printf ("  \x221e  ");
+				printf (" inf ");
+			else
+				printf (" %03i ", distance);
+		}
+		printf ("\n");
+	}
+	printf ("\n");
 }
 
 void PrintNext (int** next)
 {
-    //print distances matrix
-    wprintf (L"Path matrix\n\n");
-    wprintf (L"   │");
-    for (int x = 1; x <= nCities; x++)
-        wprintf (L" %02i ", x);
-    wprintf (L"\n");
-    wprintf (L"───┼");
-    for (int x = 1; x <= nCities; x++)
-        wprintf (L"────");
-    wprintf (L"\n");
-    for (int x = 1; x <= nCities; x++)
-    {
-        wprintf (L"%02i │", x);
-        for (int y = 1; y <= nCities; y++)
-        {
-            int nextcity = next[x][y];
+	//print distances matrix
+	printf ("Path matrix\n\n");
+	printf ("   │");
+	for (int x = 1; x <= nCities; x++)
+		printf (" %02i ", x);
+	printf ("\n");
+	printf ("───┼");
+	for (int x = 1; x <= nCities; x++)
+		printf ("────");
+	printf ("\n");
+	for (int x = 1; x <= nCities; x++)
+	{
+		printf ("%02i │", x);
+		for (int y = 1; y <= nCities; y++)
+		{
+			int nextcity = next[x][y];
 
-            if (nextcity == -1)
-                wprintf (L" \u00D7  ");
-            else
-                wprintf (L" %02i ", nextcity);
-        }
-        wprintf (L"\n");
-    }
+			if (nextcity == -1)
+				printf (" \u00D7  ");
+			else
+				printf (" %02i ", nextcity);
+		}
+		printf ("\n");
+	}
 }
 
 int64_t GetTimeMs64()
 {
 #ifdef WIN32
-    /* Windows */
-    FILETIME ft;
-    LARGE_INTEGER li;
+	/* Windows */
+	FILETIME ft;
+	LARGE_INTEGER li;
 
-    /* Get the amount of 100 nano seconds intervals elapsed since January 1, 1601 (UTC) and copy it
-    * to a LARGE_INTEGER structure. */
-    GetSystemTimeAsFileTime (&ft);
-    li.LowPart = ft.dwLowDateTime;
-    li.HighPart = ft.dwHighDateTime;
+	/* Get the amount of 100 nano seconds intervals elapsed since January 1, 1601 (UTC) and copy it
+	* to a LARGE_INTEGER structure. */
+	GetSystemTimeAsFileTime (&ft);
+	li.LowPart = ft.dwLowDateTime;
+	li.HighPart = ft.dwHighDateTime;
 
-    uint64_t ret = li.QuadPart;
-    ret -= 116444736000000000LL; /* Convert from file time to UNIX epoch time. */
-    ret /= 10; // From 100 nano seconds (10^-7)
+	uint64_t ret = li.QuadPart;
+	ret -= 116444736000000000LL; /* Convert from file time to UNIX epoch time. */
+	ret /= 10000; // From 100 nano seconds (10^-7)
 
-    return ret;
+	return ret;
 #else
-    /* Linux */
-    struct timeval tv;
+	/* Linux */
+	struct timeval tv;
 
-    gettimeofday (&tv, NULL);
+	gettimeofday (&tv, NULL);
 
-    uint64 ret = tv.tv_usec;
-    /* Convert from micro seconds (10^-6) to milliseconds (10^-3) */
-    ret /= 1000;
+	uint64 ret = tv.tv_usec;
+	/* Convert from micro seconds (10^-6) to milliseconds (10^-3) */
+	ret /= 1000;
 
-    /* Adds the seconds (10^0) after converting them to milliseconds (10^-3) */
-    ret += (tv.tv_sec * 1000);
+	/* Adds the seconds (10^0) after converting them to milliseconds (10^-3) */
+	ret += (tv.tv_sec * 1000);
 
-    return ret;
+	return ret;
 #endif
+}
+
+void InitializeArrays()
+{
+	fin.open (filename);   // open a file
+
+	if (!fin.good())
+	{
+		printf ("File for graph data couldn't be found or couldn't be open.");
+		exit(0); // exit if file not found
+	}
+
+	fin.getline (buf, MAX_CHARS_PER_LINE);
+	istringstream (buf) >> nCities;
+	cities.push_back (string (buf, buf + strlen (buf)));
+
+	for (int city = nCities; city > 0; city--)
+	{
+		fin.getline (buf, MAX_CHARS_PER_LINE);
+		cities.push_back (string (buf, buf + strlen (buf)));
+		string svcity = cities[nCities - city + 1];
+		//for (unsigned i = 0; i < svcity.length(); ++i)
+		//printf ("%c\n", svcity.at (i));
+	}
+	//inst arrays;
+
+	//let dist be a |V| × |V| array of minimum distances initialized to ∞ (infinity)
+	dist = new int*[nCities + 1];
+	next = new int*[nCities + 1];
+
+	for (int i = nCities; i > 0; i--)     //for each edge (u,v)
+	{
+		dist[i] = new int[nCities + 1];//dist[u][v] ← w(u,v)  // the weight of the edge (u,v)
+		next[i] = new int[nCities + 1];
+
+		for (int j = nCities; j > 0; j--)
+		{
+			if (i == j)
+				dist[i][j] = 0;
+			else
+				dist[i][j] = INT_MAX;
+			next[i][j] = -1;
+		}
+	}
+	//arrays initialized
+
+	//parse initial city distances
+	while (!fin.eof())
+	{
+		fin.getline (buf, MAX_CHARS_PER_LINE);
+
+		if (buf[0] == '-') break;
+
+		istringstream iss (buf);
+		int sourceCity = -1, destCity = -1, distance = INT_MAX;
+
+		for (int subdex = 3; subdex > 0; subdex--)     //iterate thice for each substring
+		{
+			//(there's actually an additional substring that's either empty or whitespace)
+			string sub;
+			iss >> sub;
+			string wsdestcity;
+			string wssourcecity;
+
+			switch (subdex)
+			{
+			case 1:
+				distance = atoi (sub.c_str());
+				//printf ("distance: %i\n", distance);
+				break;
+			case 2:
+				destCity = atoi (sub.c_str());
+				//printf ("destination: ");
+				wsdestcity = cities[destCity];
+				//for (unsigned i = 0; i < wsdestcity.length(); ++i)
+				//printf ("%c\n", wsdestcity.at (i));
+				break;
+			case 3:
+				sourceCity = atoi (sub.c_str());
+				//printf ("\nsource: ");
+				wssourcecity = cities[sourceCity];
+				//for (unsigned i = 0; i < wssourcecity.length(); ++i)
+				//printf ("%c\n", wssourcecity.at (i));
+				break;
+			default:
+				printf ("this isn't the substring index you're looking for\n");
+			}   //switch
+		}//for
+
+		if (distance != INT_MAX)     //inf dist edges already initialized
+		{
+			//only overwrite edge vals is they're explicitly finite
+			//(safety from overwriting zero-val edges from each vertex to itself)
+			dist[sourceCity][destCity] = distance;
+
+			if (bidirectional)
+				dist[destCity][sourceCity] = distance;
+		}
+	} //while
+	fin.close();
+	//initial distances initialized
+}
+
+void CleanUpArrays()
+{
+	for (int x = 1; x <= nCities; x++)
+	{
+		delete [] dist[x];
+		delete [] next[x];
+	}
+	delete [] dist;
+	delete [] next;
+}
+
+void PathLoop(){
+	string buffer;
+	/*
+	while (buffer != "n" )
+	{*/
+	//test loop
+
+	const int tests = 5;
+	int ** testtrips = new int *[tests];
+
+	for(int y = tests; y > 0; y--)
+	{
+		testtrips[y - 1] = new int[2];
+		/*for(int x = 2; x > 0; x--)
+		{
+		testtrips[y - 1][x - 1] = rand() % nCities + 1;
+		printf ("%i ", testtrips[y - 1][x - 1]);
+		}
+		printf ("\n ");*/
+	}
+	testtrips[4][0] = 20; //predetermined test paths
+	testtrips[4][1] = 1;
+	testtrips[3][0] = 11;
+	testtrips[3][1] = 8;
+	testtrips[2][0] = 22;
+	testtrips[2][1] = 5;
+	testtrips[1][0] = 11;
+	testtrips[1][1] = 26;
+	testtrips[0][0] = 19;
+	testtrips[0][1] = 24;
+
+	for(int test = tests; test > 0; test--)
+	{
+		int source = testtrips[test - 1][0];
+		int destination = testtrips[test - 1][1];
+		//int source = rand() % nCities + 1;
+		//int destination = rand() % nCities + 1;
+
+		while (source == destination)
+			destination = rand() % nCities + 1;
+
+		vector<int> pathvector = GetPath (source, destination);	//then get intermediate path
+
+		printf ("\nShortest path from %s to %s is %i.\n", cities[source].c_str(), cities[destination].c_str(), dist[source][destination]);
+
+		for (vector<int>::size_type i = 0; i < pathvector.size() - 1; i++)
+		{
+			int from = pathvector[i];
+			int to = pathvector[i + 1];
+			printf ("    %s to %s:\t%i\n", cities[from].c_str(), cities[to].c_str(), dist[from][to]);
+		}
+		printf ("\nRun again? (y/n)\n");
+	} //test loop
+	/*
+	cin >> buffer;
+
+	while(buffer != "y" && buffer != "n")
+	cin >> buffer;
+	}*/
 }
